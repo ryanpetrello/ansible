@@ -52,9 +52,18 @@ options:
       default: null
     kind:
       description:
-        - Type of credential being added.
-      required: True
+        - Kind of credential being added
+      required: False
       choices: ["ssh", "vault", "net", "scm", "aws", "vmware", "satellite6", "cloudforms", "gce", "azure_rm", "openstack", "rhv", "insights", "tower"]
+    credential_type:
+      description:
+        - Type of credential being added
+      required: True
+    inputs:
+      description:
+        - Input values for this credential
+      required: False
+      default: null
     host:
       description:
         - Host for this credential.
@@ -148,6 +157,10 @@ EXAMPLES = '''
     name: Team Name
     description: Team Description
     organization: test-org
+    credential_type: 1
+    inputs:
+      - username: joe
+        password: secret
     state: present
     tower_config_file: "~/tower_cli.cfg"
 '''
@@ -209,8 +222,9 @@ def main():
         name=dict(required=True),
         user=dict(),
         team=dict(),
-        kind=dict(required=True,
-                  choices=KIND_CHOICES.keys()),
+        credential_type=dict(),
+        kind=dict(choices=KIND_CHOICES.keys()),
+        inputs=dict(type='dict'),
         host=dict(),
         username=dict(),
         password=dict(no_log=True),
@@ -238,6 +252,10 @@ def main():
     if not HAS_TOWER_CLI:
         module.fail_json(msg='ansible-tower-cli required for this module')
 
+    provided_values = set([key for key, value in module.params.items() if value])
+    if len(provided_values.intersection(('kind', 'credential_type'))) != 1:
+        module.fail_json(msg='either credential_type or kind must be specified (not both)')
+
     name = module.params.get('name')
     organization = module.params.get('organization')
     state = module.params.get('state')
@@ -258,8 +276,14 @@ def main():
                 org = org_res.get(name=organization)
                 params['organization'] = org['id']
 
-            credential_type = credential_type_for_v1_kind(module.params, module)
-            params['credential_type'] = credential_type['id']
+            if module.params.get('kind'):
+                module.deprecate(msg="Specifying credential type via the kind "
+                                     "argument is deprecated.  Please "
+                                     "use credential_type instead")
+                credential_type = credential_type_for_v1_kind(module.params, module)
+                params['credential_type'] = credential_type['id']
+            else:
+                params['credential_type'] = module.params['credential_type']
 
             if module.params.get('description'):
                 params['description'] = module.params.get('description')
@@ -274,23 +298,26 @@ def main():
                 team = team_res.get(name=module.params.get('team'))
                 params['team'] = team['id']
 
-            params['inputs'] = {}
-            if module.params.get('ssh_key_data'):
-                filename = module.params.get('ssh_key_data')
-                if not os.path.exists(filename):
-                    module.fail_json(msg='file not found: %s' % filename)
-                if os.path.isdir(filename):
-                    module.fail_json(msg='attempted to read contents of directory: %s' % filename)
-                with open(filename, 'rb') as f:
-                    params['inputs']['ssh_key_data'] = f.read()
+            if module.params.get('inputs'):
+                params['inputs'] = module.params['inputs']
+            else:
+                params['inputs'] = {}
+                if module.params.get('ssh_key_data'):
+                    filename = module.params.get('ssh_key_data')
+                    if not os.path.exists(filename):
+                        module.fail_json(msg='file not found: %s' % filename)
+                    if os.path.isdir(filename):
+                        module.fail_json(msg='attempted to read contents of directory: %s' % filename)
+                    with open(filename, 'rb') as f:
+                        params['inputs']['ssh_key_data'] = f.read()
 
-            for key in ('authorize', 'authorize_password', 'client', 'secret',
-                        'tenant', 'subscription', 'domain', 'become_method',
-                        'become_username', 'become_password', 'vault_password',
-                        'project', 'host', 'username', 'password',
-                        'ssh_key_unlock'):
-                if module.params.get(key):
-                    params['inputs'][key] = module.params.get(key)
+                for key in ('authorize', 'authorize_password', 'client', 'secret',
+                            'tenant', 'subscription', 'domain', 'become_method',
+                            'become_username', 'become_password', 'vault_password',
+                            'project', 'host', 'username', 'password',
+                            'ssh_key_unlock'):
+                    if module.params.get(key):
+                        params['inputs'][key] = module.params.get(key)
 
             if state == 'present':
                 result = credential.modify(**params)
